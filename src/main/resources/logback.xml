@@ -1,0 +1,23 @@
+<configuration>
+
+<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+        <fieldNames class="net.logstash.logback.fieldnames.ShortenedFieldNames">
+            <timestamp>timestamp</timestamp>
+            <version>[ignore]</version>
+            <levelValue>[ignore]</levelValue>
+            <stackTrace>exception</stackTrace>
+        </fieldNames>
+    </encoder>
+</appender>
+
+<logger name="akka" level="ERROR" />
+<logger name="org.apache.kafka" level="WARN" />
+<logger name="org.apache.zookeeper" level="WARN" />
+<logger name="lph.importer" level="DEBUG" />
+
+<root level="INFO">
+    <appender-ref ref="STDOUT"/>
+</root>
+
+</configuration>

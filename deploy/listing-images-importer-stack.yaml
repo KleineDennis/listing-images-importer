@@ -1,0 +1,385 @@
+# AutoStacker24 CloudFormation Template (https://github.com/AutoScout24/autostacker24/blob/master/readme.md)
+AWSTemplateFormatVersion: '2010-09-09'
+Description: listing-images-importer
+
+Parameters:
+
+  AccountName:
+    Description: The name of the account, e.g. 'as24prod'
+    Type: String
+
+  AmiId:
+    Description: Id of existing AMI for service instances
+    Type: AWS::EC2::Image::Id
+
+  AuthRole:
+    Description: IAM role used to S3 authentication
+    Type: String
+
+  VpcId:
+    Description: The VPC ID of the global stack
+    Type: AWS::EC2::VPC::Id
+
+  AvailabilityZones:
+    Description: The list of AvailabilityZones for your Virtual Private Cloud (VPC)
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+
+  DataDog:
+    Description: Whether to enable DataDog in production
+    Type: String
+
+  InstanceType:
+    Description: Instance type of service application servers
+    Type: String
+
+  MaximumNumberOfServers:
+    Description: Maximum number of servers to have in the autoscaling group
+    Type: Number
+
+  MinimumNumberOfServers:
+    Description: Minimum number of servers to have in the autoscaling group
+    Type: Number
+
+  RunbookUrl:
+    Description: Location of runbooks, which holds prodecures for handling alerts
+    Type: String
+    Default: https://github.com/AutoScout24/tatsu-service/blob/master/runbooks
+
+  Service:
+    Description: Name of the service.
+    Type: String
+
+  BastionSecurityGroup:
+    Description: Security group of the bastion host
+    Type: AWS::EC2::SecurityGroup::Id
+
+  PrivateServiceSubnets:
+    Description: Subnets where service instances should be launched.
+    Type: List<AWS::EC2::Subnet::Id>
+
+  Version:
+    Description: Version of the service to launch.
+    Type: String
+
+  OpsGenieKey:
+    Description: API key for OpsGenie integration
+    Type: String
+    NoEcho: 'true'
+
+  KafkaSecurityGroup:
+    Description: Security group for the kafka client
+    Type: String
+
+  ZookeeperSecurityGroup:
+    Description: Security group for the zookeeper client
+    Type: String
+
+
+Conditions:
+  IsDev: !Equals [!Ref AccountName, "as24dev"]
+  UseDataDog: !Equals [!Ref DataDog, true]
+
+
+Resources:
+  OpsGenieTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Endpoint: !Sub https://api.opsgenie.com/v1/json/cloudwatch?apiKey=${OpsGenieKey}
+        Protocol: https
+      TopicName: !Sub "${AWS::StackName}-opsgenie"
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable access to the service host
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Tags:
+      - Key: Name
+        Value: !Sub "${AWS::StackName}-service"
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !Ref AvailabilityZones
+      VPCZoneIdentifier: !Ref PrivateServiceSubnets
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: !Ref MinimumNumberOfServers
+      MaxSize: !Ref MaximumNumberOfServers
+      HealthCheckGracePeriod: '600'
+      HealthCheckType: EC2
+      MetricsCollection:
+      - Granularity: 1Minute
+        Metrics:
+        - GroupInServiceInstances
+      NotificationConfigurations:
+      - TopicARN: !Ref OpsGenieTopic
+        NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      Tags:
+      - Key: Name
+        Value: !Ref Service
+        PropagateAtLaunch: 'true'
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref MinimumNumberOfServers
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: !Ref MinimumNumberOfServers
+        MaxBatchSize: !Ref MinimumNumberOfServers
+        PauseTime: PT10M
+        SuspendProcesses:
+        - AlarmNotification
+        - ScheduledActions
+        WaitOnResourceSignals: 'true'
+
+  OfficeHoursScaleUp:
+    Type: AWS::AutoScaling::ScheduledAction
+    Condition: IsDev
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      MinSize: !Ref MinimumNumberOfServers
+      MaxSize: !Ref MaximumNumberOfServers
+      Recurrence: 0 6 * * 1-5
+
+  OfficeHoursScaleDown:
+    Type: AWS::AutoScaling::ScheduledAction
+    Condition: IsDev
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      MinSize: '0'
+      MaxSize: '0'
+      Recurrence: 0 20 * * *
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      # This can be used to download artifacts directly from S3 without having to use the cli
+      # You may use the "sources" stanca from cfn-init to do so
+      AWS::CloudFormation::Authentication:
+        S3AccessCreds:
+          type: s3
+          buckets:
+          - !Sub as24-artifacts-${AWS::Region}
+          roleName: !Ref AuthRole
+
+      AWS::CloudFormation::Init:
+
+        configSets:
+          service_configuration:
+          - user_config
+          - service_setup
+          - fluentd_config
+          - logrotate_config
+          datadog_configuration:
+          - datadog_setup
+
+        user_config:
+          commands:
+            # Create application user with bash shell
+            add_app_user:
+              command: useradd -U -d /opt/service service -s /bin/bash
+            # Custom bash prompt (useful for ssh access production visual warning, http://bashrcgenerator.com/ for color codes)
+            custom_bash_prompt:
+              command: !Sub |
+                if [ "${AccountName}" = "as24prod" ]; then
+                  echo 'export PS1="${Service}|\[\033[38;5;1m\]${AccountName}\[$(tput sgr0)\]|\u@\h:\w\$ "' >> /etc/bashrc
+                else
+                  echo 'export PS1="${Service}|${AccountName}|\u@\h:\w\$ "' >> /etc/bashrc
+                fi
+        # We need to start fluentd in this step and pass the correct stack name
+        fluentd_config:
+          files:
+            # add fluentd config for application log.
+            /opt/fluentd/conf.d/service.conf:
+              content: '@file://./config/fluentd-service.conf'
+          commands:
+            # Start/reload fluentd
+            start_fluentd:
+              command: !Sub |
+                if /sbin/initctl status fluentd | grep -q 'stop/waiting'; then
+                    /sbin/initctl start fluentd STACKNAME="${AWS::StackName}"
+                else
+                    /sbin/initctl reload fluentd STACKNAME="${AWS::StackName}"
+                fi
+        # Log rotation configuration
+        logrotate_config:
+          files:
+            /etc/logrotate.d/application:
+              content: |
+                /opt/service/application.log {
+                  compress
+                  copytruncate
+                  rotate 5
+                  size 100M
+                }
+          commands:
+            a_delete_logrotate:
+              # delete current logrotate scheduling
+              command: rm /etc/cron.daily/logrotate
+            b_configure_logrotate:
+              # run logrocate every 1 minute
+              command: echo "*/1 * * * * /usr/sbin/logrotate /etc/logrotate.conf" | crontab
+
+        service_setup:
+          # This line does the following:
+          # 1. Authenticate with CloudFront/S3 using the instance's IAM role
+          # 2. Download the artifact to the root directory using the URL provided
+          # 3. Extracts the artifact
+          #
+          # There is no more need for moving/extracting artifacts yourself
+          sources:
+            "/opt/service": !Sub "https://s3-${AWS::Region}.amazonaws.com/as24-artifacts-${AWS::Region}/${Service}/${Service}-${Version}.tgz"
+          files:
+            "/opt/service/start.sh":
+              content: "@{file://./start.sh}"
+              mode: '000555'
+              owner: root
+              group: root
+          commands:
+            a_chmod:
+              # Change ownership to the right user (application user)
+              command: chown -R service.service /opt/service
+            ab_chmod:
+              # Allows fluentd to read logs
+              command: chmod a+x /opt/service
+            # 1. Enter the service directory
+            # 2. Start the service in the background
+            b_start:
+              command: nohup ./start.sh >> /opt/service/application.log 2>&1 &
+              cwd: "/opt/service"
+            c_smoketest:
+              command: sleep 5 && ps -fp $(pgrep -d, -x java) | grep @{Service}-@{Version}.jar
+        datadog_setup:
+          files:
+            "/etc/dd-agent/conf.d/service.yaml":
+              content: !Sub |
+                init_config:
+                  is_jmx: true
+
+                  # general instructions for registering metrics
+                  #
+                  # - use JVisualVM to discover bean names and attribute names as exposed by codahale metrics.
+                  # - the bean: attribute must be 'metrics:name=<your-metric-name>', this is how codahale exposes its metrics.
+                  # - the attribute: element(s) "Value" and "Count" must be equivalent to the JMX attribute(s) exposed,
+                  #   and depend on the metric type.
+                  # - Datadog convert dashes in metric aliases to underscores.
+                  # - The metric is published to Datadog under the name given as alias.
+                  conf:
+                    # the thread pool metric is a gauge and must be registered with datadog as metric_type: gauge.
+                    - include:
+                        domain: 'metrics'
+                        bean: 'metrics:name=blocking-io-thread-pool-size'
+                        attribute:
+                          Value:
+                            metric_type: gauge
+                            alias: ${Service}.blocking_io_thread_pool_size
+                    # the thread pool metric is a meter and must be registered with datadog as metric_type: rate.
+                    - include:
+                        domain: 'metrics'
+                        bean: 'metrics:name=requests'
+                        attribute:
+                          Count:
+                            metric_type: rate
+                            alias: ${Service}.requests
+
+                instances:
+                  - host: localhost
+                    port: 9010
+                    name: ${Service}
+
+              mode: '000644'
+              owner: dd-agent
+              group: root
+          commands:
+            start_datadog:
+              command: service datadog-agent start
+
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref ServiceSecurityGroup
+        - !Ref ZookeeperSecurityGroup
+        - !Ref KafkaSecurityGroup
+      IamInstanceProfile: !Ref AuthRole
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+
+          # This is needed for cfn-init to reinitialize the instances with the new version on updates
+          VERSION="${Version}"
+
+          if [ "${DataDog}" = "true" ]; then
+              CONFIG_SETS="service_configuration,datadog_configuration"
+          else
+              CONFIG_SETS="service_configuration"
+          fi
+
+          /opt/aws/bin/cfn-init -v \
+              --stack ${AWS::StackName} \
+              --resource LaunchConfig \
+              --configsets $CONFIG_SETS \
+              --region ${AWS::Region}
+
+          /opt/aws/bin/cfn-signal -e $? \
+              --stack ${AWS::StackName} \
+              --region ${AWS::Region} \
+              --resource AutoScalingGroup
+
+  WebServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: '600'
+      ScalingAdjustment: '1'
+
+  WebServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: '900'
+      ScalingAdjustment: "-1"
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 50% for 2 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '120'
+      EvaluationPeriods: '1'
+      Threshold: '50'
+      AlarmActions:
+      - !Ref WebServerScaleUpPolicy
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref AutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 20% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '600'
+      EvaluationPeriods: '1'
+      Threshold: '20'
+      AlarmActions:
+      - !Ref WebServerScaleDownPolicy
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref AutoScalingGroup
+      ComparisonOperator: LessThanThreshold

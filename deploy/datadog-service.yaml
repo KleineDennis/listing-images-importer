@@ -1,0 +1,180 @@
+instances:
+  - host: localhost
+    port: 9010
+    name: @Service
+
+init_config:
+  is_jmx: true
+  conf:
+  - include:
+      domain: 'kafka.consumer'
+      bean_regex: 'kafka\.consumer:type=consumer-metrics,client-id=.*'
+      attribute:
+        connection-creation-rate:
+          metric_type: gauge
+          alias: kafka.consumer.connection_creation_rate
+        connection-close-rate:
+          metric_type: gauge
+          alias: kafka.consumer.connection_close_rate
+        connection-count:
+          metric_type: gauge
+          alias: kafka.consumer.connection_count
+  - include:
+      domain: 'kafka.consumer'
+      bean_regex: 'kafka\.consumer:type=consumer-fetch-manager-metrics,client-id=.*,topic=.*'
+      attribute:
+        bytes-consumed-rate:
+          metric_type: gauge
+          alias: kafka.consumer.bytes_consumed_rate
+        records-consumed-rate:
+          metric_type: gauge
+          alias: kafka.consumer.records_consumed_rate
+  - include:
+      domain: 'kafka.consumer'
+      bean_regex: 'kafka\.consumer:type=consumer-fetch-manager-metrics,client-id=.*'
+      attribute:
+        records-lag-max:
+          metric_type: gauge
+          alias: kafka.consumer.records_lag_max
+        fetch-rate:
+          metric_type: gauge
+          alias: kafka.consumer.fetch_rate
+        fetch-latency-avg:
+          metric_type: gauge
+          alias: kafka.consumer.fetch_latency_avg
+        fetch-size-avg:
+          metric_type: gauge
+          alias: kafka.consumer.fetch_size_avg
+  - include:
+      domain: 'kafka.consumer'
+      bean_regex: 'kafka\.consumer:type=consumer-coordinator-metrics,client-id=.*'
+      attribute:
+        commit-rate:
+          metric_type: gauge
+          alias: kafka.consumer.commit_rate
+        commit-latency-avg:
+          metric_type: gauge
+          alias: kafka.consumer.commit_latency_avg
+        join-rate:
+          metric_type: gauge
+          alias: kafka.consumer.join_rate
+        sync-rate:
+          metric_type: gauge
+          alias: kafka.consumer.sync_rate
+        sync-time-avg:
+          metric_type: gauge
+          alias: kafka.consumer.sync_time_avg
+        assigned-partitions:
+          metric_type: gauge
+          alias: kafka.consumer.assigned_partitions
+
+
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=records.processed'
+      attribute:
+        Count:
+          metric_type: gauge
+          alias: @{Service}.records.processed
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=records.cannotProcess'
+      attribute:
+        Count:
+          metric_type: gauge
+          alias: @{Service}.records.cannotProcess
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=records.ageSeconds'
+      attribute:
+        Max:
+          metric_type: gauge
+          alias: @{Service}.records.ageSeconds.max
+        99thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.ageSeconds.99thPercentile
+        95thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.ageSeconds.95thPercentile
+        75thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.ageSeconds.75thPercentile
+        50thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.ageSeconds.50thPercentile
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=records.lagFromInsertionInMs'
+      attribute:
+        Max:
+          metric_type: gauge
+          alias: @{Service}.records.lagFromInsertionInMs.max
+        99thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.lagFromInsertionInMs.99thPercentile
+        95thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.lagFromInsertionInMs.95thPercentile
+        75thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.lagFromInsertionInMs.75thPercentile
+        50thPercentile:
+          metric_type: gauge
+          alias: @{Service}.records.lagFromInsertionInMs.50thPercentile
+
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=listing.history.newRecord'
+      attribute:
+        Count:
+          metric_type: gauge
+          alias: @{Service}.listing.history.newRecord
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=listing.batch.processed'
+      attribute:
+        Count:
+          metric_type: gauge
+          alias: @{Service}.listing.batch.processed
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=listing.batch.failed'
+      attribute:
+        Count:
+          metric_type: gauge
+          alias: @{Service}.listing.batch.failed
+  - include:
+        domain: 'metrics'
+        bean: 'metrics:name=listing.batch.size'
+        attribute:
+          Count:
+            metric_type: gauge
+            alias: @{Service}.listing.batch.size
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=listing.batch.processingTime'
+      attribute:
+        Value:
+          metric_type: gauge
+          alias: @{Service}.listing.batch.processingTime
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=record.tooOld'
+      attribute:
+        Value:
+          metric_type: gauge
+          alias: @{Service}.record.tooOld
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=price.added'
+      attribute:
+        Value:
+          metric_type: gauge
+          alias: @{Service}.price.added
+  - include:
+      domain: 'metrics'
+      bean: 'metrics:name=listing.deleted'
+      attribute:
+        Value:
+          metric_type: gauge
+          alias: @{Service}.listing.deleted

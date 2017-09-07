@@ -1,0 +1,12 @@
+service: "listing-images-importer"
+usecase: "listing-images-importer"
+segment: "dealer"
+vertical: "as24"
+owner: "#AS24-Calculon-ds@scout24.com"
+team: "Calculon/DLM"
+criticality: "bronze"
+confidentiality: "customer-confidential"
+integrity: "non-critical"
+availability: "non-critical"
+data_protection_relevant: no
+repository_url: "https://github.com/AutoScout24/listing-images-importer"

@@ -1,0 +1,104 @@
+require 'rubygems'
+require 'bundler/setup'
+require 'autostacker24'
+require 'base64'
+
+Aws.use_bundled_cert!
+
+
+SERVICE         = 'listing-images-importer'
+VERSION         = ENV['VERSION'] || ENV['GO_PIPELINE_LABEL']
+SANDBOX         = ENV['SANDBOX'] || ENV['GO_JOB_NAME'].nil? && `whoami`.strip
+STACK           = SANDBOX ? "#{SANDBOX}-#{SERVICE}" : SERVICE
+GLOBAL          = ENV['GLOBAL'] || 'global'
+AWS_REGION      = ENV['AWS_REGION'] || 'eu-west-1'
+TEMPLATE        = 'listing-images-importer-stack.yaml'
+DATADOG         = false
+ALARM_PERIOD    = 60
+ENCRYPTED_OPSGENIE_API_KEY = 'CiA2G5kHM0w3MXrzwTqap0iZUeGHUUg/yKA/JIdBgRZmJRKsAQEBAgB4NhuZBzNMNzF688E6mqdImVHhh1FIP8igPySHQYEWZiUAAACDMIGABgkqhkiG9w0BBwagczBxAgEAMGwGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQM2i162Saisi+3pQ3YAgEQgD/Hq3c2wNRk0o/EoZWp3nkSCgWIdoO9yyjy/MHXDPZTlTWdVYQyCeur9z3Tl4a85tycKB/+w7UsoZXkShiz0OA='
+ENCRYPTED_DATADOG_API_KEY  = 'AQECAHg2G5kHM0w3MXrzwTqap0iZUeGHUUg/yKA/JIdBgRZmJQAAAH4wfAYJKoZIhvcNAQcGoG8wbQIBADBoBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDHYX6gxNt2abfYYB2gIBEIA7q12u/kALwa+o4K12/yaWoPAe2YHsIXoXo+WQtH7Y/ydoBiQZYs/4QXVL6QSX4/AjSXucg1ZGMijBcjw='
+
+
+desc 'create or update stack'
+task :create_or_update do
+  METADATA_TAGS = tags_from_metadata_file("../metadata.yaml")
+  TAGS = SANDBOX ? METADATA_TAGS << {key: 'sandbox', value: SANDBOX} : METADATA_TAGS
+  output_global = Stacker.get_stack_output(GLOBAL)
+  account_name = output_global[:AccountName]
+  prod = account_name =~ /as24prod/i
+  fail('VERSION missing') unless VERSION
+
+  if prod && DATADOG
+    TAGS << { key: "datadog", value: "false"}
+  end
+
+  minimumNumberOfServers = prod ? 2 : 1
+  maximumNumberOfServers = prod ? 2 : 1
+
+  parameters = {
+        MinimumNumberOfServers: minimumNumberOfServers,
+        MaximumNumberOfServers: maximumNumberOfServers,
+        OpsGenieKey: kms_decrypt_credentials(ENCRYPTED_OPSGENIE_API_KEY),
+        RunbookUrl: "https://github.com/AutoScout24/#{SERVICE}/blob/master/docs/runbooks",
+        AmiId:                ENV['AMI_ID'] || File.read('ami.txt'), # TODO: get newest ami locally
+        AuthRole:             ENV['AUTH_ROLE'] || SERVICE,
+        InstanceType:         prod ? 'm4.large' : 't2.small',
+        Service:              SERVICE,
+        Version:              VERSION,
+        KafkaSecurityGroup:   Stacker.get_stack_outputs('kafka-client')[:KafkaClientSecurityGroup],
+        ZookeeperSecurityGroup: Stacker.get_stack_outputs('zookeeper-client')[:ZooKeeperClientSecurityGroup],
+        DataDog:              (prod && DATADOG).to_s,
+        BastionSecurityGroup: output_global[:BastionSecurityGroup]
+  }
+
+  Stacker.create_or_update_stack(STACK, TEMPLATE, parameters, GLOBAL, TAGS)
+end
+
+desc 'deploy service'
+task :deploy => [:create_or_update] do
+end
+
+desc 'delete stack'
+task :delete do
+  Stacker.delete_stack(STACK) unless Stacker.find_stack(STACK).nil?
+end
+
+desc 'validate template'
+task :validate do
+  Stacker.validate_template(TEMPLATE)
+end
+
+desc "publish"
+task :publish do
+  Dir.chdir('..') do
+    system "GO_PIPELINE_LABEL=#{VERSION} AWS_REGION=#{AWS_REGION} ./publish.sh" or exit 1
+  end
+end
+
+task :default do
+  puts
+  puts 'Use one of the available tasks:'
+  puts "Current stack is #{STACK}\n"
+  system 'rake -T'
+end
+
+def kms_decrypt_credentials(cipher_text)
+  kms = Aws::KMS::Client.new
+  kms.decrypt({ciphertext_blob: Base64.decode64(cipher_text)}).plaintext
+end
+
+def tags_from_metadata_file(path, *additional_tags)
+  allowed_chars = /^[a-zA-Z0-9\+-=\._:\/@]*$/
+  data = YAML.load_file(path)
+  ([:service, :usecase, :team, :segment, :repository_url] + additional_tags)
+      .map { |k| [k, data[k.to_s]] }
+      .select { |k,v|
+    if allowed_chars.match(k) && allowed_chars.match(v)
+      true
+    else
+      warn "WARNING: CFN Tag (#{ k }) => (#{ v }) has forbidden characters"
+      false
+    end
+  }
+      .map { |k,v| { key: k, value: v.to_s } }
+end
